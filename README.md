@@ -1,5 +1,7 @@
 A coroutine based event tracker that simply writes to stdout/stderr.
 
+![screenshot](https://github.com/melbaa/notify/blob/master/ss.png)
+
 # Features
 * check email at http://abv.bg
 * notify when followed streamers on http://twitch.tv and http://hitbox.tv go
