@@ -91,7 +91,7 @@ def session_get_timeout(session, url, timeout=TIMEOUT):
 def safe_requests_logged():
     try:
         yield
-    except (requests.exceptions.ConnectionError,
+    except (requests.exceptions.ConnectionError,  # noqa
             requests.exceptions.ReadTimeout) as e:
         # logging.debug('recovered from ' + repr(e))
         # logging.debug(traceback.format_exc())
@@ -234,10 +234,27 @@ def hour_tick():
 @asyncio.coroutine
 def qlranks_inspect(players, tick_min=15):
     """
-    if channel is live
-    get channel title
-    notify if a player is in the title
+    notify if a player is in the title of qlrankstv
     """
+
+    def process_reply(json_reply, previous_state):
+        if json_reply['stream'] is None:
+            return
+
+        stream = json_reply['stream']
+        stream_title = stream['channel']['status']
+        stream_title = stream_title.lower()
+
+        for player in players:
+            if player in stream_title:
+                if previous_state.get(player, OFFLINE) != LIVE:
+                    logging.info(QLR_MSG_LIVE.format(player))
+                    previous_state[player] = LIVE
+            else:  # not in stream_title
+                if previous_state.get(player, OFFLINE) != OFFLINE:
+                    logging.info(QLR_MSG_OFF.format(player))
+                    previous_state[player] = OFFLINE
+
     players = [player.lower() for player in players]
     logging.debug('hi from qlranks inspect')
     logging.debug('started with ' + str(players))
@@ -246,9 +263,10 @@ def qlranks_inspect(players, tick_min=15):
         headers = STREAM_API_DATA[TWITCH]['headers']
         url = STREAM_API_DATA[TWITCH]['url']
         STREAM_NAME = 'qlrankstv'
-        QLR_MSG_LIVE = '{} on http://twitch.tv/qlrankstv LIVE'
-        QLR_MSG_OFF = '{} on http://twitch.tv/qlrankstv offline'
+        QLR_MSG_LIVE = 'http://twitch.tv/qlrankstv {} LIVE'
+        QLR_MSG_OFF = 'http://twitch.tv/qlrankstv {} offline'
         loop = asyncio.get_event_loop()
+        previous_state = dict()  # player to liveness
         while True:
             session.headers.update(headers)
             future = loop.run_in_executor(
@@ -258,15 +276,7 @@ def qlranks_inspect(players, tick_min=15):
                 resp = yield from future
                 try:
                     json_reply = json.loads(resp.text)
-
-                    if json_reply['stream'] is not None:
-                        stream = json_reply['stream']
-                        stream_title = stream['channel']['status']
-                        stream_title = stream_title.lower()
-
-                        for player in players:
-                            if player in stream_title:
-                                logging.info(QLR_MSG_LIVE.format(player))
+                    process_reply(json_reply, previous_state)
 
                 except ValueError:
                     logging.debug(traceback.format_exc())
@@ -289,7 +299,6 @@ def append_streams(all_streams, json_streams, streamtype):
             all_streams.append(Stream(s, streamtype, None))
         elif isinstance(s, dict):
             all_streams.append(Stream(s['name'], streamtype, s['comment']))
-
 
 
 def main():
