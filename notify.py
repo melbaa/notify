@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 
 import asyncio
-import base64
-import contextlib
 import collections
+import contextlib
 import ctypes
 import json
 import logging
@@ -94,7 +93,9 @@ def safe_requests_logged():
         yield
     except (requests.exceptions.ConnectionError,
             requests.exceptions.ReadTimeout) as e:
-        logging.debug('recovered from ' + repr(e))
+        # logging.debug('recovered from ' + repr(e))
+        # logging.debug(traceback.format_exc())
+        pass
 
 
 def log_lastchance_exc(func):
@@ -150,7 +151,6 @@ def followed_streams(streams):
                 logging.info(resp_json)
             return
 
-
         if liveness != previous_state.get(stream.name, OFFLINE):
             msg_name_comment = stream.name
             if stream.comment:
@@ -166,12 +166,8 @@ def followed_streams(streams):
 
         while 1:
             for stream in streams:
-                try:
+                with safe_requests_logged():
                     yield from update_stream_info(stream)
-                except (requests.exceptions.ConnectionError,
-                        requests.exceptions.ReadTimeout) as e:
-                        logging.debug('recovered from ' + repr(e))
-                        # logging.debug(traceback.format_exc())
                 yield from asyncio.sleep(5)
 
             yield from asyncio.sleep(10 * 60)  # secs
@@ -184,7 +180,7 @@ def followed_streams(streams):
 def get_abv(users_dict):
     try:
         logging.debug('hi from get_abv')
-        logging.debug('started with ' + str(users_dict))
+        logging.debug('started with ' + str(users_dict.keys()))
         loop = asyncio.get_event_loop()
 
         session = requests.Session()
@@ -242,6 +238,7 @@ def qlranks_inspect(players, tick_min=15):
     get channel title
     notify if a player is in the title
     """
+    players = [player.lower() for player in players]
     logging.debug('hi from qlranks inspect')
     logging.debug('started with ' + str(players))
     try:
@@ -249,7 +246,8 @@ def qlranks_inspect(players, tick_min=15):
         headers = STREAM_API_DATA[TWITCH]['headers']
         url = STREAM_API_DATA[TWITCH]['url']
         STREAM_NAME = 'qlrankstv'
-        INFO_MSG = '{} is on http://twitch.tv/qlrankstv LIVE'
+        QLR_MSG_LIVE = '{} on http://twitch.tv/qlrankstv LIVE'
+        QLR_MSG_OFF = '{} on http://twitch.tv/qlrankstv offline'
         loop = asyncio.get_event_loop()
         while True:
             session.headers.update(headers)
@@ -267,9 +265,9 @@ def qlranks_inspect(players, tick_min=15):
                         stream_title = stream_title.lower()
 
                         for player in players:
-                            player = player.lower()
                             if player in stream_title:
-                                logging.info(INFO_MSG.format(player))
+                                logging.info(QLR_MSG_LIVE.format(player))
+
                 except ValueError:
                     logging.debug(traceback.format_exc())
 
@@ -294,7 +292,6 @@ def append_streams(all_streams, json_streams, streamtype):
 
 
 
-
 def main():
 
     logging.basicConfig(
@@ -314,7 +311,6 @@ def main():
 
     if platform.uname().system == 'Windows':
         ctypes.windll.kernel32.SetConsoleTitleA(b'notify')
-
 
     all_streams = []
 
