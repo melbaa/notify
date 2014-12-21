@@ -78,12 +78,15 @@ STREAM_API_DATA = {
 LIVE = 'LIVE'
 OFFLINE = 'offline'
 
-TIMEOUT = 10
+REQUEST_TIMEOUT = 10
 
 ABV_API_URL = 'https://api.abv.bg/api/checkMail/json?username={}&password={}'
 
+QLR_STREAM_NAME = 'qlrankstv'
+QLR_MSG_LIVE = 'http://twitch.tv/qlrankstv {} LIVE'
+QLR_MSG_OFF = 'http://twitch.tv/qlrankstv {} offline'
 
-def session_get_timeout(session, url, timeout=TIMEOUT):
+def session_get_timeout(session, url, timeout=REQUEST_TIMEOUT):
     return session.get(url, timeout=timeout)
 
 
@@ -145,10 +148,10 @@ def followed_streams(streams):
                 raise NotImplementedError('idk')
 
         except ValueError:
-            logging.info("can't parse reply for {}".format(stream.name))
+            logging.debug("can't parse reply for {}".format(stream.name))
             if resp_json is not None:
-                logging.info('value error json')
-                logging.info(resp_json)
+                logging.debug('value error json')
+                logging.debug(resp_json)
             return
 
         if liveness != previous_state.get(stream.name, OFFLINE):
@@ -194,7 +197,7 @@ def get_abv(users_dict):
                     None,
                     session_get_timeout, session,
                     ABV_API_URL.format(user, passwd))
-                try:
+                with safe_requests_logged():
                     response1 = yield from future1
                     resp = json.loads(response1.text)
                     # logging.info(response1.text)
@@ -202,8 +205,6 @@ def get_abv(users_dict):
                     for folder in folders:
                         logging.info('{} {} {}'.format(
                             user, folder['name'], folder['newMsgCount']))
-                except requests.exceptions.ConnectionError as err:
-                    logging.debug('recovered from ' + repr(err))
 
                 yield from asyncio.sleep(60 * 20)  # secs
 
@@ -245,15 +246,19 @@ def qlranks_inspect(players, tick_min=15):
         stream_title = stream['channel']['status']
         stream_title = stream_title.lower()
 
+        # to show offlines before onlines
+        output = collections.deque()
         for player in players:
             if player in stream_title:
                 if previous_state.get(player, OFFLINE) != LIVE:
-                    logging.info(QLR_MSG_LIVE.format(player))
+                    output.append(QLR_MSG_LIVE.format(player))
                     previous_state[player] = LIVE
             else:  # not in stream_title
                 if previous_state.get(player, OFFLINE) != OFFLINE:
-                    logging.info(QLR_MSG_OFF.format(player))
+                    output.appendleft(QLR_MSG_OFF.format(player))
                     previous_state[player] = OFFLINE
+        for msg in output:
+            logging.info(msg)
 
     players = [player.lower() for player in players]
     logging.debug('hi from qlranks inspect')
@@ -262,15 +267,12 @@ def qlranks_inspect(players, tick_min=15):
         session = STREAM_API_DATA[TWITCH]['session']
         headers = STREAM_API_DATA[TWITCH]['headers']
         url = STREAM_API_DATA[TWITCH]['url']
-        STREAM_NAME = 'qlrankstv'
-        QLR_MSG_LIVE = 'http://twitch.tv/qlrankstv {} LIVE'
-        QLR_MSG_OFF = 'http://twitch.tv/qlrankstv {} offline'
         loop = asyncio.get_event_loop()
         previous_state = dict()  # player to liveness
         while True:
             session.headers.update(headers)
             future = loop.run_in_executor(
-                None, session_get_timeout, session, url.format(STREAM_NAME))
+                None, session_get_timeout, session, url.format(QLR_STREAM_NAME))
 
             with safe_requests_logged():
                 resp = yield from future
