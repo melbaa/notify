@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import asyncio
 import collections
 import contextlib
@@ -14,6 +15,8 @@ import requests.exceptions
 
 """
 TODO
+gmail notifier
+
 use streams api as api.twitch.tv/kraken/streams?channel=chan1,chan2
 to reduce num requests
 
@@ -29,16 +32,19 @@ show recently expired events
 
 rss?
 hackernews top stories? https://github.com/HackerNews/API
+just use http://hckrnews.com/ for now
 
+qt ui?
+sdl2 gui?
 pygame gui, so you can click the text and the browser will take you there
 pygame is sdl 1.2, sdl2 is out tho.
-sdl2 gui?
-qt ui?
 JAVASCRIPT gui? with websockets?
 javascript has nice 2d engines, see pixijs.com and http://html5gameengine.com/
 
-diff notifiers in diff colors, so you can ignore the spam easily?
-a box with all text (incl errors) and one with just the normal info
+log screens with diff verbosity
+    diff notifiers in diff colors, so you can ignore the spam easily?
+    a box with all text (incl errors) and one with just the normal info
+screen with "currently live" streams and when they were last checked
 """
 
 """
@@ -147,7 +153,7 @@ def followed_streams(streams):
             else:
                 raise NotImplementedError('idk')
 
-        except ValueError:
+        except (ValueError, KeyError):
             logging.debug("can't parse reply for {}".format(stream.name))
             if resp_json is not None:
                 logging.debug('value error json')
@@ -201,10 +207,16 @@ def get_abv(users_dict):
                     response1 = yield from future1
                     resp = json.loads(response1.text)
                     # logging.info(response1.text)
-                    folders = resp['mail']['folders']
-                    for folder in folders:
-                        logging.info('{} {} {}'.format(
-                            user, folder['name'], folder['newMsgCount']))
+                    if resp['message']['status'] != 0:
+                        
+                        logging.error('status: {} text: {}'.format(
+                            resp['message']['status'],
+                            resp['message']['text']))
+                    else:
+                        folders = resp['mail']['folders']
+                        for folder in folders:
+                            logging.info('{} {} {}'.format(
+                                user, folder['name'], folder['newMsgCount']))
 
                 yield from asyncio.sleep(60 * 20)  # secs
 
@@ -239,10 +251,10 @@ def qlranks_inspect(players, tick_min=15):
     """
 
     def process_reply(json_reply, previous_state):
-        if json_reply['stream'] is None:
+        stream = json_reply.get('stream')
+        if stream is None:
             return
-
-        stream = json_reply['stream']
+            
         stream_title = stream['channel']['status']
         stream_title = stream_title.lower()
 
@@ -289,8 +301,8 @@ def qlranks_inspect(players, tick_min=15):
         logging.error(traceback.format_exc())
 
 
-def read_config():
-    with open('secrets.json') as f:
+def read_config(filename):
+    with open(filename) as f:
         config = json.loads(f.read())
     return config
 
@@ -314,7 +326,10 @@ def main():
         alogger = logging.getLogger(logger_name)
         alogger.setLevel(logging.ERROR)
 
-    config = read_config()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('CONFIGPATH', type=str, help='path to secrets.json')
+    args = parser.parse_args()
+    config = read_config(args.CONFIGPATH)
 
     logging.debug('hi from notifier')
     loop = asyncio.get_event_loop()
