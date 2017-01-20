@@ -17,6 +17,13 @@ import requests.exceptions
 TODO
 gmail notifier
 
+show caught exceptions only if more than 3 last 5 iterations. Eg >50% failures
+keep a list of last 5 executions
+print only if >3 failed and current one is failing
+in other words we don't want to print in this case:  ok fail fail fail ok,
+because we are currently ok
+
+
 use streams api as api.twitch.tv/kraken/streams?channel=chan1,chan2
 to reduce num requests
 
@@ -34,12 +41,21 @@ rss?
 hackernews top stories? https://github.com/HackerNews/API
 just use http://hckrnews.com/ for now
 
+
+javascript/html gui?
+
+    vue + websockets? https://websockets.readthedocs.io/en/stable/intro.html / aiohttp.web websockets
+        monitor close and error events to reconnect
+        have a small div with websocket state
+    vue + EventSource
+    vue + axios + lodash. setInterval on vue ready() lifecycle hook - polling
+    vue + socketio (sux, weird protocol)
+    javascript has nice 2d engines, see pixijs.com and http://html5gameengine.com/
+    
 qt ui?
 sdl2 gui?
 pygame gui, so you can click the text and the browser will take you there
 pygame is sdl 1.2, sdl2 is out tho.
-JAVASCRIPT gui? with websockets?
-javascript has nice 2d engines, see pixijs.com and http://html5gameengine.com/
 
 log screens with diff verbosity
     diff notifiers in diff colors, so you can ignore the spam easily?
@@ -71,7 +87,7 @@ STREAM_API_DATA = {
         'message': "http://twitch.tv/{} is {}",  # abc is LIVE or offline
         'session': requests.Session(),
         'previous_state': dict(),
-        },
+    },
 
     HITBOX: {
         'url': 'http://api.hitbox.tv/media/live/{}',
@@ -79,8 +95,8 @@ STREAM_API_DATA = {
         'message': 'hitbox.tv/{} is {}',
         'session': requests.Session(),
         'previous_state': dict(),
-        },
-    }
+    },
+}
 LIVE = 'LIVE'
 OFFLINE = 'offline'
 
@@ -92,9 +108,41 @@ QLR_STREAM_NAME = 'qlrankstv'
 QLR_MSG_LIVE = 'http://twitch.tv/qlrankstv {} LIVE'
 QLR_MSG_OFF = 'http://twitch.tv/qlrankstv {} offline'
 
+
+class StateTracker:
+    STATE_UNKNOWN = 'STATE_UNKNOWN'
+    STATE_UP = 'STATE_UP'
+    STATE_DOWN = 'STATE_DOWN'
+    
+    def __init__(self):
+        self._old_state = dict()
+        
+    def set_state(self, key, state):
+        old = self._old_state.get(key, StateTracker.STATE_UNKNOWN)
+        self._old_state[key] = state
+        
+        if old == StateTracker.STATE_UNKNOWN and state == StateTracker.STATE_DOWN:
+            # don't notify from unknown to down
+            return
+        
+        if old == state:
+            # don't notify if no change in state
+            return
+        
+        return state
+
+
 def session_get_timeout(session, url, timeout=REQUEST_TIMEOUT):
     return session.get(url, timeout=timeout)
 
+
+@asyncio.coroutine
+def session_get_in_executor(loop, session, url, timeout):
+    future = loop.run_in_executor(
+            None, session_get_timeout, session, url, timeout)
+    resp = yield from future
+    return resp
+    
 
 @contextlib.contextmanager
 def safe_requests_logged():
@@ -102,15 +150,16 @@ def safe_requests_logged():
         yield
     except (requests.exceptions.ConnectionError,  # noqa
             requests.exceptions.ReadTimeout) as e:
-        # logging.debug('recovered from ' + repr(e))
+        logging.debug('recovered from ' + repr(e))
         # logging.debug(traceback.format_exc())
         pass
 
 
 def log_lastchance_exc(func):
+    # note for generators
     def inner(*args, **kwargs):
         try:
-            func(*args, **kwargs)
+            yield from func(*args, **kwargs)
         except Exception:
             logging.error('last chance exception')
             logging.error(traceback.format_exc())
@@ -151,7 +200,7 @@ def followed_streams(streams):
                    and int(resp_json['livestream'][0]['media_is_live'])):
                     liveness = LIVE
             else:
-                raise NotImplementedError('idk')
+                raise NotImplementedError('unknown stream type')
 
         except (ValueError, KeyError):
             logging.debug("can't parse reply for {}".format(stream.name))
@@ -180,7 +229,7 @@ def followed_streams(streams):
                 yield from asyncio.sleep(5)
 
             yield from asyncio.sleep(10 * 60)  # secs
-    except:
+    except Exception as e:
         logging.error('last chance exception')
         logging.error(traceback.format_exc())
 
@@ -300,6 +349,45 @@ def qlranks_inspect(players, tick_min=15):
         logging.error('last chance exception')
         logging.error(traceback.format_exc())
 
+        
+@asyncio.coroutine
+@log_lastchance_exc
+def cs_streams(api_url, streams):
+    loop = asyncio.get_event_loop()
+    session = requests.Session()
+    poll_interval = 15 * 60
+    streams = set(streams)
+    logging.debug('hi from cs_streams {}'.format(streams))
+    state_tracker = StateTracker()
+    while True:
+        with safe_requests_logged():
+  
+            resp = yield from session_get_in_executor(loop, session, api_url, REQUEST_TIMEOUT)
+            j = resp.json()
+            
+            streams_online = set()
+            for record in j:
+                username = record['username']
+                if username in streams:
+                    streams_online.add(username)
+                
+            for stream in streams_online:
+                state = state_tracker.set_state(stream, StateTracker.STATE_UP)
+                
+                if state:
+                    logging.info('{} is {}'.format(stream, state))
+                    
+            for stream in streams - streams_online:
+                state = state_tracker.set_state(stream, StateTracker.STATE_DOWN)
+                
+                if state:
+                    logging.info('{} is {}'.format(stream, state))
+                
+        
+        yield from asyncio.sleep(poll_interval)
+
+
+
 
 def read_config(filename):
     with open(filename) as f:
@@ -321,8 +409,11 @@ def main():
         level=logging.DEBUG,
         format='%(asctime)s %(name)s %(levelname)s L%(lineno)d %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S')
-
-    for logger_name in ['requests', 'asyncio']:
+    
+    for logger_name in [
+            'requests', 
+            'asyncio'
+        ]:
         alogger = logging.getLogger(logger_name)
         alogger.setLevel(logging.ERROR)
 
@@ -350,17 +441,21 @@ def main():
     abv_accounts = config.get('abv_accounts', {})
 
     qlranks_players = config.get('qlranks_players', set())
+    
+    cs_streams_url, *cs_streams_list = config.get('cs_streams')
 
     tasks = [
+        
         asyncio.async(get_abv(abv_accounts)),
         asyncio.async(backup_reminder()),
         asyncio.async(hour_tick()),
         asyncio.async(qlranks_inspect(qlranks_players)),
         asyncio.async(followed_streams(all_streams)),
+        asyncio.async(cs_streams(cs_streams_url, cs_streams_list)),
     ]
 
-    loop.run_until_complete(asyncio.wait(tasks))
-    # loop.run_forever()
+    #loop.run_until_complete(asyncio.wait(tasks))
+    loop.run_forever()
     loop.close()
 
 if __name__ == '__main__':
