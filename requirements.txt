@@ -1,1 +1,3 @@
 requests>=2.4.1
+attrs>=16
+pytest
