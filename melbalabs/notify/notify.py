@@ -158,6 +158,7 @@ def safe_requests_logged():
     except (requests.exceptions.ConnectionError,  # noqa
             requests.exceptions.ReadTimeout,
             requests.exceptions.ChunkedEncodingError,
+            requests.exceptions.HTTPError,
             json.decoder.JSONDecodeError,
             ) as e:
         logging.debug('recovered from ' + repr(e))
@@ -463,8 +464,11 @@ async def twitch_check_online_batch(streams_list, session, loop):
     channels_qry = ','.join(channels)
     url = 'https://api.twitch.tv/kraken/streams?channel=' + channels_qry
     resp = await session_get_in_executor(loop, session, url, REQUEST_TIMEOUT)
+    resp.raise_for_status()
     resp_streams = resp.json()['streams']
     online = dict()
+    if resp_streams is None:
+        return online  # nothing to do, could retry some day
     for s in resp_streams:
         name = s['channel']['name']
         game = s['game']
@@ -474,8 +478,8 @@ async def twitch_check_online_batch(streams_list, session, loop):
     return online
 
 async def twitch_check_online(streams, session, loop):
-    batch_size = 10
-    sleep_time_sec = 2
+    batch_size = 20
+    sleep_time_sec = 16
     stream_list = list(streams.values())
     online = dict()
     for i in range(0, len(streams), batch_size):
@@ -494,6 +498,7 @@ async def twitch_check_online(streams, session, loop):
 
 @log_lastchance_exc
 async def track_twitch_streams(streams_conf, loop):
+    sleep_time_sec = 5 * 60
     notification_msg_fmt = 'twitch.tv/{name} {comment} {game} {state}'
     session = get_twitch_requests_session()
     state_tracker = StateTracker()
@@ -510,18 +515,23 @@ async def track_twitch_streams(streams_conf, loop):
         logging.warning('USER NOT FOUND {}'.format(s))
 
     while True:
+        with safe_requests_logged():
         # batches of api ids, check if online, convert back to logins
-        streams_online, streams_offline = await twitch_check_online(streams, session, loop)
+            streams_online, streams_offline = await twitch_check_online(streams, session, loop)
 
-        for s in streams_online.values():
-            state_changed = state_tracker.set_state(s.name, StateTracker.STATE_UP)
-            if state_changed:
-                logging.info(notification_msg_fmt.format(name=s.name, comment=s.comment, game=s.game, state=StateTracker.STATE_UP))
+            for s in streams_online.values():
+                state_changed = state_tracker.set_state(s.name, StateTracker.STATE_UP)
+                if state_changed:
+                    logging.info(notification_msg_fmt.format(
+                        name=s.name, comment=s.comment, game=s.game, state=StateTracker.STATE_UP))
 
-        for s in streams_offline.values():
-            state_changed = state_tracker.set_state(s.name, StateTracker.STATE_DOWN)
-            if state_changed:
-                logging.info(notification_msg_fmt.format(name=s.name, comment=s.comment, game=s.game, state=StateTracker.STATE_UP))
+            for s in streams_offline.values():
+                state_changed = state_tracker.set_state(s.name, StateTracker.STATE_DOWN)
+                if state_changed:
+                    logging.info(notification_msg_fmt.format(
+                        name=s.name, comment=s.comment, game=s.game, state=StateTracker.STATE_DOWN))
+
+        asyncio.sleep(sleep_time_sec)
 
 
 
@@ -553,7 +563,8 @@ def main():
 
     for logger_name in [
             'requests',
-            'asyncio'
+            'asyncio',
+            'urllib3.connectionpool',
         ]:
         alogger = logging.getLogger(logger_name)
         alogger.setLevel(logging.ERROR)
